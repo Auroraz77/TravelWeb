@@ -24,7 +24,7 @@ body {
     width: 30%;
     height: 45%;
     position: absolute;
-    top: 10%;
+    top: 6%;
     left: 0;
 }
 
@@ -42,7 +42,7 @@ body {
     top: 10%;
     left: 30%;
     width: 40%;
-    height: 25%;
+    height: 18%;
     /* background: #777; */
     display: flex;
     flex-wrap: wrap;
@@ -54,10 +54,10 @@ body {
     width: 100%;
     height: 100%;
     background: linear-gradient(135deg, #1a365d 0%, #2d4a7c 50%, #1e3a5f 100%);
-    border-radius: 16px;
-    padding: 20px 24px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3),
-                0 0 60px rgba(212, 175, 55, 0.1),
+    border-radius: 12px;
+    padding: 12px 16px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3),
+                0 0 40px rgba(212, 175, 55, 0.1),
                 inset 0 1px 0 rgba(255, 255, 255, 0.1);
     position: relative;
     overflow: hidden;
@@ -78,8 +78,8 @@ body {
 .card-header {
     display: flex;
     align-items: center;
-    gap: 16px;
-    margin-bottom: 16px;
+    gap: 12px;
+    margin-bottom: 10px;
     position: relative;
     z-index: 1;
 }
@@ -87,17 +87,17 @@ body {
 .city-badge {
     background: linear-gradient(135deg, #d4af37 0%, #f4d03f 100%);
     color: #1a365d;
-    padding: 6px 16px;
-    border-radius: 20px;
-    font-size: 13px;
+    padding: 4px 12px;
+    border-radius: 16px;
+    font-size: 11px;
     font-weight: bold;
-    box-shadow: 0 2px 8px rgba(212, 175, 55, 0.4);
+    box-shadow: 0 2px 6px rgba(212, 175, 55, 0.4);
     white-space: nowrap;
 }
 
 .attraction-name {
     color: #ffffff;
-    font-size: 22px;
+    font-size: 20px;
     font-weight: bold;
     white-space: nowrap;
     overflow: hidden;
@@ -108,13 +108,13 @@ body {
 
 .card-body {
     position: relative;
-    z-index: 1;
+    z-index: 2;
 }
 
 .description-label {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     color: rgba(212, 175, 55, 0.9);
     font-size: 12px;
     margin-bottom: 8px;
@@ -128,21 +128,21 @@ body {
 
 .description-text {
     color: rgba(255, 255, 255, 0.95);
-    font-size: 15px;
-    line-height: 1.6;
+    font-size: 13px;
+    line-height: 1.4;
     background: rgba(255, 255, 255, 0.05);
-    padding: 12px 16px;
-    border-radius: 8px;
+    padding: 8px 50px 8px 14px;
+    border-radius: 6px;
     border-left: 3px solid rgba(212, 175, 55, 0.5);
 }
 
 .card-decoration {
     position: absolute;
-    bottom: 10px;
-    right: 20px;
-    opacity: 0.15;
-    font-size: 48px;
-    z-index: 0;
+    bottom: 8px;
+    right: 14px;
+    opacity: 0.85;
+    font-size: 36px;
+    z-index: 3;
 }
 
 .gondola-icon {
@@ -152,42 +152,42 @@ body {
 /* 响应式适配 */
 @media (max-width: 1200px) {
     .attraction-name {
-        font-size: 18px;
+        font-size: 14px;
     }
     .attraction-card {
-        padding: 16px 20px;
+        padding: 10px 14px;
     }
 }
 
 @media (max-width: 768px) {
     #center1 {
         top: 8%;
-        height: 20%;
+        height: 15%;
     }
     .attraction-card {
-        padding: 12px 16px;
+        padding: 8px 12px;
     }
     .attraction-name {
-        font-size: 16px;
+        font-size: 13px;
     }
     .description-text {
-        font-size: 13px;
-        padding: 8px 12px;
+        font-size: 11px;
+        padding: 6px 10px;
     }
 }
 
 #center2 {
     position: absolute;
-    top: 30%;
+    top: 32%;
     left: 28%;
     width: 40%;
-    height: 65%;
+    height: 63%;
     background: #888;
 }
 
 #right1 {
     position: absolute;
-    top: 10%;
+    top: 6%;
     right: 0;
     width: 30%;
     height: 45%;

@@ -8,7 +8,7 @@ var option = {
         textStyle: {
             color: 'white',
         },
-        left: 'left',
+        left: 'center',
         top: '5px'
     },
     tooltip: {

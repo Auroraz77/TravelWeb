@@ -10,12 +10,6 @@ function fetchRandomAttraction() {
         .then(result => {
             if (result.success) {
                 attractions.push(result.data);
-                if (attractions.length > 10) {
-                    attractions.shift();
-                }
-                if (attractions.length === 1) {
-                    updateDisplay(result.data);
-                }
             } else {
                 console.error('获取景点失败:', result.error);
             }
@@ -35,16 +29,21 @@ function updateDisplay(attraction) {
 }
 
 function switchAttraction() {
+    // 先预取一个新景点
+    fetchRandomAttraction();
+
+    // 等有景点再切换
     if (attractions.length > 0) {
-        currentAttractionIndex = (currentAttractionIndex + 1) % attractions.length;
+        // 每次切换都取最新的一个
+        currentAttractionIndex = attractions.length - 1;
         updateDisplay(attractions[currentAttractionIndex]);
     }
 }
 
-// 先预加载一些景点数据
-for (var i = 0; i < 3; i++) {
+// 初始加载5个景点
+for (var i = 0; i < 5; i++) {
     fetchRandomAttraction();
 }
 
-// 每3秒切换景点
+// 每3秒切换景点，同时预取新的
 setInterval(switchAttraction, 3000);
