@@ -1,98 +1,95 @@
 // 初始化echart实例对象
 var myChart = echarts.init(document.getElementById('center2'), 'dark');
 
-//
-//
-//
-
-
-// 指定图表的配置项和数据
+// ----------假期出行数据地图配置------------
 var option = {
     title: {
-        text: '全国疫情地图展示',
+        text: '假期出行数据地图分布',
         textStyle: {
             color: 'gold',
             fontStyle: 'normal',
-
         },
         left: 'center',
-        top: '40px'
-
+        top: '20px'
     },
     tooltip: {
-        trigger: 'item'
+        trigger: 'item',
+        formatter: function(params) {
+            return params.name + '<br/>销量: ' + (params.value || 0);
+        }
     },
-    visualMap: { // 左侧小导航图标
+    visualMap: {
         show: true,
         x: 'left',
         y: 'bottom',
         textStyle: {
-            fontSize: 8,
+            fontSize: 10,
+            color: '#fff'
         },
-        splitList: [{
-                start: 1,
-                end: 9
-            },
-            {
-                start: 10,
-                end: 99
-            },
-            {
-                start: 100,
-                end: 999
-            },
-            {
-                start: 1000,
-                end: 9999
-            },
-            {
-                start: 10000
-            }
+        splitList: [
+            { start: 0, end: 10000 },
+            { start: 10000, end: 50000 },
+            { start: 50000, end: 100000 },
+            { start: 100000, end: 500000 },
+            { start: 500000 }
         ],
-        color: ['#8A3310', '#C64918', '#E55B25', '#F2AD92', '#F9DCD1']
+        color: ['#1a5276', '#2874a6', '#3498db', '#5dade2', '#aed6f1']
     },
     series: [{
-        name: '累计确诊人数',
+        name: '景点销量',
         type: 'map',
         mapType: 'china',
-        roam: false, // 禁用拖动和缩放
-        itemStyle: { // 图形样式
+        roam: false,
+        itemStyle: {
             normal: {
-                borderWidth: .5, //区域边框宽度
-                borderColor: '#009fe8', //区域边框颜色
-                areaColor: "#ffefd5", //区域颜色
+                borderWidth: 0.5,
+                borderColor: '#009fe8',
+                areaColor: "#1a1a2e",
             },
-            emphasis: { // 鼠标滑过地图高亮的相关设置
-                borderWidth: .5,
+            emphasis: {
+                borderWidth: 0.5,
                 borderColor: '#4b0082',
-                areaColor: "#fff",
+                areaColor: "#16213e",
             }
         },
-        label: { // 图形上的文本标签
+        label: {
             normal: {
-                show: true, //省份名称
+                show: true,
                 fontSize: 8,
+                color: 'black'
             },
             emphasis: {
                 show: true,
-                fontSize: 8,
+                fontSize: 10,
             }
         },
-        data: [] /*{'name': '上海','value': 318}, {'name': '云南','value': 162}*/
+        data: []
     }]
 };
 
-// 获取中国各省市特区
-var provinces = data.areaTree[0].children
+// 使用刚指定的配置项和数据显示图表
+myChart.setOption(option);
 
-// 遍历每一个省自治区、直辖市
-for (var province of provinces) {
-    // 将每个省的累计确诊病例数添加到配置项的data中
-    option.series[0].data.push({
-        'name': province.name,
-        'value': province.total.confirm
-    })
+// 从后端获取各省销量汇总数据
+function fetchSalesByProvince() {
+    fetch('http://localhost:8000/api/sales_by_province')
+        .then(response => response.json())
+        .then(result => {
+            if (result.success) {
+                myChart.setOption({
+                    series: [{
+                        data: result.data
+                    }]
+                });
+            }
+        })
+        .catch(function(err) {
+            console.error('获取省份销量数据失败:', err);
+        });
 }
 
-// 使用刚指定的配置项和数据显示图表。
-myChart.setOption(option);
+// 首次加载
+fetchSalesByProvince();
+
+// 每 5 秒刷新一次地图数据
+setInterval(fetchSalesByProvince, 5000);

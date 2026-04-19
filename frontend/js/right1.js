@@ -1,12 +1,10 @@
 // 初始化echart实例对象
-//
 var right1Chart = echarts.init(document.getElementById('right1'), 'dark');
-
 
 // ----------右1的配置项-------------------
 var option = {
     title: {
-        text: "全国确诊省市TOP10",
+        text: "今日销量 TOP10 景点",
         textStyle: {
             color: 'white',
         },
@@ -15,18 +13,19 @@ var option = {
     color: ['#3398DB'],
     tooltip: {
         trigger: 'axis',
-        //指示器
         axisPointer: {
-            type: 'shadow' // 默认为直线，可选为：'line' | 'shadow'
+            type: 'shadow'
         }
     },
-    xAxis: {
-        type: 'category',
-        data: [] // ['湖北','广州','北京']
+    grid: {
+        left: '3%',
+        right: '8%',
+        bottom: '3%',
+        top: 50,
+        containLabel: true
     },
-    yAxis: {
+    xAxis: {
         type: 'value',
-        //y轴字体设置
         axisLabel: {
             show: true,
             color: 'white',
@@ -38,41 +37,84 @@ var option = {
                 return value;
             }
         },
+        axisLine: {
+            show: true,
+            lineStyle: {
+                color: 'rgba(255,255,255,0.3)'
+            }
+        },
+        splitLine: {
+            lineStyle: {
+                color: 'rgba(255,255,255,0.1)'
+            }
+        }
+    },
+    yAxis: {
+        type: 'category',
+        data: [],
+        axisLabel: {
+            color: 'white',
+            fontSize: 11
+        },
+        axisLine: {
+            show: false
+        },
+        axisTick: {
+            show: false
+        }
     },
     series: [{
-        data: [], // [582, 300, 100]
+        data: [],
         type: 'bar',
-        barMaxWidth: "50%"
+        barWidth: '50%',
+        label: {
+            show: true,
+            position: 'right',
+            color: '#00E5FF',
+            fontSize: 11,
+            fontWeight: 'bold'
+        },
+        itemStyle: {
+            color: new echarts.graphic.LinearGradient(0, 0, 1, 0, [
+                { offset: 0, color: 'rgba(0, 80, 160, 0.6)' },
+                { offset: 1, color: '#00E5FF' }
+            ]),
+            borderRadius: [0, 5, 5, 0]
+        }
     }]
 };
 
-// 获取中国各省市特区
-var provinces = data.areaTree[0].children
-
-var topData = []
-    // 遍历每一个省自治区、直辖市
-for (var province of provinces) {
-    // 将每个省的累计确诊病例数添加到配置项的data中
-    topData.push({
-        'name': province.name,
-        'value': province.children[0].total.confirm
-    })
-}
-
-topData.sort(function(a, b) {
-    return b.value - a.value
-})
-topData.length = 10
-
-// console.log(topData)
-
-for (var province of topData) {
-    // 将每个省的累计确诊病例数添加到配置项的data中
-    option.xAxis.data.push(province.name)
-    option.series[0].data.push(province.value)
-
-}
-
-
-// 使用刚指定的配置项和数据显示图表。
 right1Chart.setOption(option);
+
+// 每 2 秒从后端获取实时排名数据
+function fetchLiveRanking() {
+    fetch('http://localhost:8000/api/live_ranking')
+        .then(response => response.json())
+        .then(result => {
+            if (result.success) {
+                var names = [];
+                var values = [];
+
+                // 注意：横向柱状图 Y 轴默认从下往上，需要 reverse() 让第一名在上
+                result.data.reverse().forEach(function(item) {
+                    names.push(item['名称']);
+                    values.push(item.today_sales);
+                });
+
+                right1Chart.setOption({
+                    yAxis: {
+                        data: names
+                    },
+                    series: [{
+                        data: values
+                    }]
+                });
+            }
+        })
+        .catch(function(err) {
+            console.error('获取排名数据失败:', err);
+        });
+}
+
+fetchLiveRanking();
+setInterval(fetchLiveRanking, 500);

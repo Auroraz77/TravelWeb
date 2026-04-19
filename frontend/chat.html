@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>景点智能助手</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Microsoft YaHei', sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        header {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 20px;
+            text-align: center;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        header h1 {
+            color: #00E5FF;
+            font-size: 24px;
+        }
+        #chat-container {
+            flex: 1;
+            max-width: 900px;
+            margin: 0 auto;
+            width: 100%;
+            padding: 20px;
+            overflow-y: auto;
+        }
+        .message {
+            margin-bottom: 20px;
+            animation: fadeIn 0.3s ease;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .user-message {
+            text-align: right;
+        }
+        .user-message .content {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px 18px;
+            border-radius: 18px 18px 4px 18px;
+            display: inline-block;
+            max-width: 70%;
+            word-wrap: break-word;
+        }
+        .assistant-message .content {
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            padding: 12px 18px;
+            border-radius: 18px 18px 18px 4px;
+            display: inline-block;
+            max-width: 70%;
+            word-wrap: break-word;
+            white-space: pre-wrap;
+        }
+        .assistant-message {
+            text-align: left;
+        }
+        #input-area {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 20px;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        #input-form {
+            max-width: 900px;
+            margin: 0 auto;
+            display: flex;
+            gap: 10px;
+        }
+        #question {
+            flex: 1;
+            padding: 15px 20px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 25px;
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            font-size: 16px;
+            outline: none;
+        }
+        #question::placeholder {
+            color: rgba(255, 255, 255, 0.5);
+        }
+        #question:focus {
+            border-color: #00E5FF;
+        }
+        #submit-btn {
+            padding: 15px 30px;
+            background: linear-gradient(135deg, #00E5FF 0%, #0099CC 100%);
+            border: none;
+            border-radius: 25px;
+            color: #1a1a2e;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        #submit-btn:hover {
+            transform: scale(1.05);
+            box-shadow: 0 0 20px rgba(0, 229, 255, 0.5);
+        }
+        #submit-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .loading {
+            display: inline-block;
+            color: #00E5FF;
+        }
+        .loading::after {
+            content: '...';
+            animation: dots 1.5s infinite;
+        }
+        @keyframes dots {
+            0%, 20% { content: '.'; }
+            40% { content: '..'; }
+            60%, 100% { content: '...'; }
+        }
+        .examples {
+            text-align: center;
+            margin-top: 15px;
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 14px;
+        }
+        .examples span {
+            color: #00E5FF;
+            cursor: pointer;
+            margin: 0 5px;
+        }
+        .examples span:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>景点智能助手</h1>
+    </header>
+
+    <div id="chat-container">
+        <div class="message assistant-message">
+            <div class="content">您好！我是景点智能助手，可以帮您查询景点信息。请问有什么可以帮您？</div>
+        </div>
+    </div>
+
+    <div id="input-area">
+        <form id="input-form">
+            <input type="text" id="question" placeholder="请输入您的问题..." autocomplete="off">
+            <button type="submit" id="submit-btn">发送</button>
+        </form>
+        <div class="examples">
+            示例问题：
+            <span onclick="fillQuestion('上海有哪些景点')">上海有哪些景点</span>
+            <span onclick="fillQuestion('哪个景点价格最低')">哪个景点价格最低</span>
+            <span onclick="fillQuestion('列出评分最高的10个景点')">列出评分最高的10个景点</span>
+        </div>
+    </div>
+
+    <script>
+        const chatContainer = document.getElementById('chat-container');
+        const inputForm = document.getElementById('input-form');
+        const questionInput = document.getElementById('question');
+        const submitBtn = document.getElementById('submit-btn');
+
+        function fillQuestion(q) {
+            questionInput.value = q;
+            questionInput.focus();
+        }
+
+        function addMessage(content, isUser = false) {
+            const msgDiv = document.createElement('div');
+            msgDiv.className = `message ${isUser ? 'user-message' : 'assistant-message'}`;
+            msgDiv.innerHTML = `<div class="content">${content}</div>`;
+            chatContainer.appendChild(msgDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function addLoading() {
+            const msgDiv = document.createElement('div');
+            msgDiv.className = 'message assistant-message';
+            msgDiv.id = 'loading-msg';
+            msgDiv.innerHTML = `<div class="content"><span class="loading">正在思考</span></div>`;
+            chatContainer.appendChild(msgDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function removeLoading() {
+            const loading = document.getElementById('loading-msg');
+            if (loading) loading.remove();
+        }
+
+        inputForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const question = questionInput.value.trim();
+            if (!question) return;
+
+            addMessage(question, true);
+            questionInput.value = '';
+            submitBtn.disabled = true;
+            addLoading();
+
+            try {
+                const response = await fetch('http://localhost:8000/api/query', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ question })
+                });
+                const result = await response.json();
+                removeLoading();
+
+                if (result.success) {
+                    addMessage(result.result);
+                } else {
+                    addMessage('抱歉，查询失败了：' + result.error);
+                }
+            } catch (err) {
+                removeLoading();
+                addMessage('网络错误，请检查后端服务是否启动');
+            }
+
+            submitBtn.disabled = false;
+        });
+    </script>
+</body>
+</html>
