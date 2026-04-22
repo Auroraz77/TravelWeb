@@ -175,6 +175,7 @@ async def health_check():
 
 class QueryRequest(BaseModel):
     question: str
+    export: bool = False  # 是否导出CSV
 
 
 def get_table_info():
@@ -187,7 +188,13 @@ def get_table_info():
 
     col_info = []
     for col in columns:
-        col_info.append(f"{col[1]} ({col[2]})")
+        col_name = col[1]
+        col_type = col[2]
+        if isinstance(col_name, bytes):
+            col_name = col_name.decode('utf-8')
+        if isinstance(col_type, bytes):
+            col_type = col_type.decode('utf-8')
+        col_info.append(f"{col_name} ({col_type})")
 
     return "\n".join(col_info)
 
@@ -259,7 +266,14 @@ def execute_query(sql):
 
         result = []
         for row in rows:
-            result.append(dict(zip(columns, row)))
+            encoded_row = []
+            for item in row:
+                if isinstance(item, bytes):
+                    item = item.decode('utf-8')
+                elif item is None:
+                    item = ''
+                encoded_row.append(item)
+            result.append(dict(zip(columns, encoded_row)))
         return result
     except Exception as e:
         return str(e)
@@ -269,7 +283,7 @@ async def query_with_llm(question: str) -> str:
     """使用 LLM + RAG + 天气 进行自然语言查询"""
 
     # 1. 判断问题类型
-    db_keywords = ['景点名称', '哪个景点', '哪里有', '价格', '销量', '评分', '星级', '城市', '多少个', '有几个']
+    db_keywords = ['景点名称', '哪个景点', '哪里有', '价格', '销量', '评分', '星级', '城市', '多少个', '有几个', '有哪些', '有什么', '景点', '地方']
     knowledge_keywords = ['系统', '功能', '能做什么', '怎么用', '是什么', '介绍', '帮助']
     weather_keywords = ['天气', '气温', '温度', '下雨', '晴天', '阴天', '刮风', '湿度', '风']
 
@@ -369,21 +383,65 @@ async def query_with_llm(question: str) -> str:
     if len(result) == 0:
         return "没有找到相关数据"
 
+    # 判断是否为"列出全部"类型的查询
+    list_all_keywords = ['有哪些', '有什么', '全部', '所有', '列出', '罗列']
+    is_list_all = any(k in question for k in list_all_keywords)
+
     # 5. 格式化结果
-    format_prompt = f"""用户问题：{question}
+    if is_list_all:
+        # 列出全部模式：直接格式化输出，不经过LLM摘要
+        if len(result) == 1:
+            # 只有一条时直接返回
+            item = result[0]
+            return '、'.join([f"{k}：{v}" for k, v in item.items()])
+
+        # 多条时列出所有结果
+        lines = []
+        for i, item in enumerate(result, 1):
+            name = item.get('名称', item.get('name', '未知'))
+            city = item.get('城市', item.get('city', ''))
+            price = item.get('价格', item.get('price', ''))
+            lines.append(f"{i}. {name}" + (f"（{city}）" if city else "") + (f" - ¥{price}" if price else ""))
+
+        total = f"共找到 {len(result)} 个结果：\n"
+        return total + '\n'.join(lines)
+    else:
+        # 摘要模式
+        format_prompt = f"""用户问题：{question}
 SQL查询结果：{str(result[:100])}
 
-请用简洁的自然语言总结这些数据。"""
-    format_response = Generation.call(
-        model="qwen-turbo",
-        prompt=format_prompt,
-        temperature=0
-    )
+请用简洁的自然语言总结这些数据。
+【重要】如果查询结果有多条，请务必全部列出，不要遗漏。"""
 
-    if format_response.status_code == 200:
-        return format_response.output['text']
-    else:
-        return str(result[:20])
+        format_response = Generation.call(
+            model="qwen-turbo",
+            prompt=format_prompt,
+            temperature=0
+        )
+
+        if format_response.status_code == 200:
+            return format_response.output['text']
+        else:
+            return str(result[:20])
+
+
+def format_csv(result):
+    """将查询结果转换为CSV格式"""
+    if not result:
+        return ""
+
+    def escape_csv_value(value):
+        """CSV字段转义：如果包含逗号、引号或换行，则加引号"""
+        s = str(value)
+        if ',' in s or '"' in s or '\n' in s:
+            s = '"' + s.replace('"', '""') + '"'
+        return s
+
+    columns = list(result[0].keys())
+    lines = [','.join(escape_csv_value(col) for col in columns)]
+    for row in result:
+        lines.append(','.join(escape_csv_value(row.get(col, '')) for col in columns))
+    return '\n'.join(lines)
 
 
 @app.post("/api/query")
@@ -391,6 +449,36 @@ async def query(request: QueryRequest):
     """自然语言查询接口"""
     try:
         result = await query_with_llm(request.question)
+
+        if request.export and isinstance(result, str) and not result.startswith("查询出错"):
+            # 导出模式：重新生成SQL并执行获取完整数据
+            table_info = get_table_info()
+            sql_prompt = f"""你是一个景点数据查询助手。数据库中有一张名为 attractions 的表，包含以下字段：
+{table_info}
+
+只生成 SELECT 查询，不要做任何修改。
+用户问题：{request.question}
+
+请只输出 SQL 语句，不要其他解释。"""
+
+            sql_response = Generation.call(
+                model="qwen-turbo",
+                prompt=sql_prompt,
+                temperature=0
+            )
+
+            if sql_response.status_code == 200:
+                sql = extract_sql(sql_response.output['text'])
+                if sql:
+                    data = execute_query(sql)
+                    csv_data = format_csv(data)
+                    return {
+                        "success": True,
+                        "result": f"导出成功，共 {len(data)} 条数据",
+                        "csv": csv_data,
+                        "timestamp": datetime.now().isoformat()
+                    }
+
         return {"success": True, "result": result, "timestamp": datetime.now().isoformat()}
     except Exception as e:
         return {"success": False, "error": str(e)}

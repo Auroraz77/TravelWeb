@@ -114,6 +114,17 @@
             opacity: 0.5;
             cursor: not-allowed;
         }
+        .export-option {
+            display: flex;
+            align-items: center;
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 14px;
+            white-space: nowrap;
+        }
+        .export-option input {
+            margin-right: 5px;
+            accent-color: #00E5FF;
+        }
         .loading {
             display: inline-block;
             color: #00E5FF;
@@ -157,6 +168,10 @@
     <div id="input-area">
         <form id="input-form">
             <input type="text" id="question" placeholder="请输入您的问题..." autocomplete="off">
+            <label class="export-option">
+                <input type="checkbox" id="export-csv">
+                导出CSV
+            </label>
             <button type="submit" id="submit-btn">发送</button>
         </form>
         <div class="examples">
@@ -211,16 +226,29 @@
             addLoading();
 
             try {
+                const exportChecked = document.getElementById('export-csv').checked;
                 const response = await fetch('http://localhost:8000/api/query', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ question })
+                    body: JSON.stringify({ question, export: exportChecked })
                 });
                 const result = await response.json();
                 removeLoading();
 
                 if (result.success) {
-                    addMessage(result.result);
+                    let message = result.result;
+                    // 如果有CSV数据，提示并自动下载
+                    if (result.csv) {
+                        const blob = new Blob([result.csv], {type: 'text/csv;charset=utf-8'});
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = '查询结果.csv';
+                        a.click();
+                        URL.revokeObjectURL(url);
+                        message += '\n（CSV文件已下载）';
+                    }
+                    addMessage(message);
                 } else {
                     addMessage('抱歉，查询失败了：' + result.error);
                 }

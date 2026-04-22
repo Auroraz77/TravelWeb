@@ -1,5 +1,5 @@
 import sqlite3
-import pandas as pd
+
 import os
 
 def init_db():
@@ -20,7 +20,7 @@ def init_db():
         return str(x)
 
     df['城市'] = df['省/市/区'].apply(extract_city)
-    df.to_sql('attractions', conn, if_exists='replace', index=False)
+    df.to_sql('attractions', conn, if_exists='replace', index=False) # 导入SQLite
     conn.close()
     print(f"数据库初始化完成: {db_path}")
     print(f"数据来源: {excel_path}")
