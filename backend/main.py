@@ -354,7 +354,7 @@ async def query_with_llm(question: str) -> str:
             return f"LLM 调用失败：{response.message}"
 
     # 4. 数据库查询
-    table_info = get_table_info()
+    table_info = get_table_info() # 获取表结构(PRAGMA table_info)
 
     sql_prompt = f"""你是一个景点数据查询助手。数据库中有一张名为 attractions 的表，包含以下字段：
 {table_info}
