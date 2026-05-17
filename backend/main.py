@@ -176,6 +176,8 @@ async def health_check():
 class QueryRequest(BaseModel):
     question: str
     export: bool = False  # 是否导出CSV
+    page: int = 1         # 当前页码（从1开始）
+    page_size: int = 20   # 每页条数，默认20，最大100
 
 
 def get_table_info():
@@ -279,7 +281,7 @@ def execute_query(sql):
         return str(e)
 
 
-async def query_with_llm(question: str) -> str:
+async def query_with_llm(question: str) -> dict:
     """使用 LLM + RAG + 天气 进行自然语言查询"""
 
     # 1. 判断问题类型
@@ -320,11 +322,11 @@ async def query_with_llm(question: str) -> str:
             if weather.get("success"):
                 w = weather
                 weather_text = f"{geo_result['name']}当前天气：{w['text']}，温度{w['temp']}°C，体感温度{w['feelsLike']}°C，湿度{w['humidity']}%，{w['windDir']}风，风速{w['windSpeed']}km/h。"
-                return weather_text
+                return {"type": "weather", "text": weather_text}
             else:
-                return f"抱歉，暂时无法获取{location_name}的天气信息。"
+                return {"type": "weather", "text": f"抱歉，暂时无法获取{location_name}的天气信息。"}
         else:
-            return f"抱歉，无法找到{location_name}的位置信息。"
+            return {"type": "weather", "text": f"抱歉，无法找到{location_name}的位置信息。"}
 
     # 2. 检索相关知识
     retrieved_knowledge = retrieve_knowledge(question)
@@ -349,9 +351,9 @@ async def query_with_llm(question: str) -> str:
         )
 
         if response.status_code == 200:
-            return response.output['text']
+            return {"type": "knowledge", "text": response.output['text']}
         else:
-            return f"LLM 调用失败：{response.message}"
+            return {"type": "knowledge", "text": f"LLM 调用失败：{response.message}"}
 
     # 4. 数据库查询
     table_info = get_table_info() # 获取表结构(PRAGMA table_info)
@@ -371,58 +373,57 @@ async def query_with_llm(question: str) -> str:
     )
 
     if sql_response.status_code != 200:
-        return f"LLM 调用失败：{sql_response.message}"
+        return {"type": "error", "text": f"LLM 调用失败：{sql_response.message}"}
 
     sql = extract_sql(sql_response.output['text'])
     if not sql:
-        return "无法理解您的问题，请尝试换一种表达方式"
+        return {"type": "error", "text": "无法理解您的问题，请尝试换一种表达方式"}
 
     result = execute_query(sql)
     if isinstance(result, str):
-        return f"查询出错：{result}"
+        return {"type": "error", "text": f"查询出错：{result}"}
     if len(result) == 0:
-        return "没有找到相关数据"
+        return {"type": "list", "data": [], "total": 0, "columns": []}
 
     # 判断是否为"列出全部"类型的查询
     list_all_keywords = ['有哪些', '有什么', '全部', '所有', '列出', '罗列']
     is_list_all = any(k in question for k in list_all_keywords)
 
-    # 5. 格式化结果
+    # 提取列名
+    columns = list(result[0].keys()) if result else []
+
+    # 5. 格式化结果 —— 返回结构化 dict，前端自行渲染
     if is_list_all:
-        # 列出全部模式：直接格式化输出，不经过LLM摘要
-        if len(result) == 1:
-            # 只有一条时直接返回
-            item = result[0]
-            return '、'.join([f"{k}：{v}" for k, v in item.items()])
-
-        # 多条时列出所有结果
-        lines = []
-        for i, item in enumerate(result, 1):
-            name = item.get('名称', item.get('name', '未知'))
-            city = item.get('城市', item.get('city', ''))
-            price = item.get('价格', item.get('price', ''))
-            lines.append(f"{i}. {name}" + (f"（{city}）" if city else "") + (f" - ¥{price}" if price else ""))
-
-        total = f"共找到 {len(result)} 个结果：\n"
-        return total + '\n'.join(lines)
+        # 列出全部模式：直接返回结构化数据，不经过LLM摘要
+        return {
+            "type": "list",
+            "data": result,
+            "total": len(result),
+            "columns": columns,
+        }
     else:
-        # 摘要模式
+        # 摘要模式：LLM 总结 + 原始数据一起返回
         format_prompt = f"""用户问题：{question}
 SQL查询结果：{str(result[:100])}
 
-请用简洁的自然语言总结这些数据。
-【重要】如果查询结果有多条，请务必全部列出，不要遗漏。"""
+请用简洁的自然语言总结这些数据。"""
 
+        summary_text = ""
         format_response = Generation.call(
             model="qwen-turbo",
             prompt=format_prompt,
             temperature=0
         )
-
         if format_response.status_code == 200:
-            return format_response.output['text']
-        else:
-            return str(result[:20])
+            summary_text = format_response.output['text']
+
+        return {
+            "type": "summary",
+            "summary": summary_text,
+            "data": result,
+            "total": len(result),
+            "columns": columns,
+        }
 
 
 def format_csv(result):
@@ -446,40 +447,60 @@ def format_csv(result):
 
 @app.post("/api/query")
 async def query(request: QueryRequest):
-    """自然语言查询接口"""
+    """自然语言查询接口 —— 移动端友好：返回结构化 JSON + 分页"""
     try:
+        # 限制 page_size 范围
+        page = max(1, request.page)
+        page_size = min(max(1, request.page_size), 100)
+
         result = await query_with_llm(request.question)
 
-        if request.export and isinstance(result, str) and not result.startswith("查询出错"):
-            # 导出模式：重新生成SQL并执行获取完整数据
-            table_info = get_table_info()
-            sql_prompt = f"""你是一个景点数据查询助手。数据库中有一张名为 attractions 的表，包含以下字段：
-{table_info}
+        # ---- 导出 CSV 模式 ----
+        if request.export and isinstance(result, dict) and result.get("type") in ("list", "summary"):
+            data = result.get("data", [])
+            if data:
+                csv_data = format_csv(data)
+                return {
+                    "success": True,
+                    "result": f"导出成功，共 {len(data)} 条数据",
+                    "csv": csv_data,
+                    "timestamp": datetime.now().isoformat()
+                }
 
-只生成 SELECT 查询，不要做任何修改。
-用户问题：{request.question}
+        # ---- 结构化数据类型 → 分页切片 ----
+        if isinstance(result, dict) and result.get("type") in ("list", "summary"):
+            full_data = result.get("data", [])
+            total = len(full_data)
+            start = (page - 1) * page_size
+            end = start + page_size
+            paged_data = full_data[start:end]
 
-请只输出 SQL 语句，不要其他解释。"""
+            return {
+                "success": True,
+                "type": result["type"],
+                "data": paged_data,
+                "columns": result.get("columns", []),
+                "summary": result.get("summary", ""),
+                "pagination": {
+                    "page": page,
+                    "page_size": page_size,
+                    "total": total,
+                    "total_pages": (total + page_size - 1) // page_size,
+                },
+                "timestamp": datetime.now().isoformat(),
+            }
 
-            sql_response = Generation.call(
-                model="qwen-turbo",
-                prompt=sql_prompt,
-                temperature=0
-            )
+        # ---- 知识库 / 天气 / 错误 → 直接透传 ----
+        if isinstance(result, dict):
+            return {
+                "success": True,
+                "type": result.get("type", "unknown"),
+                "text": result.get("text", ""),
+                "timestamp": datetime.now().isoformat(),
+            }
 
-            if sql_response.status_code == 200:
-                sql = extract_sql(sql_response.output['text'])
-                if sql:
-                    data = execute_query(sql)
-                    csv_data = format_csv(data)
-                    return {
-                        "success": True,
-                        "result": f"导出成功，共 {len(data)} 条数据",
-                        "csv": csv_data,
-                        "timestamp": datetime.now().isoformat()
-                    }
-
-        return {"success": True, "result": result, "timestamp": datetime.now().isoformat()}
+        # 兼容旧格式（字符串）
+        return {"success": True, "type": "text", "text": str(result), "timestamp": datetime.now().isoformat()}
     except Exception as e:
         return {"success": False, "error": str(e)}
 

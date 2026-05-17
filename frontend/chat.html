@@ -236,7 +236,8 @@
                 removeLoading();
 
                 if (result.success) {
-                    let message = result.result;
+                    let message = '';
+
                     // 如果有CSV数据，提示并自动下载
                     if (result.csv) {
                         const blob = new Blob([result.csv], {type: 'text/csv;charset=utf-8'});
@@ -246,11 +247,37 @@
                         a.download = '查询结果.csv';
                         a.click();
                         URL.revokeObjectURL(url);
+                    }
+
+                    // 根据响应类型构建显示内容
+                    if (result.type === 'list' || result.type === 'summary') {
+                        // 结构化数据：显示摘要 + 表格
+                        if (result.summary) {
+                            message += result.summary + '\n\n';
+                        }
+                        if (result.data && result.data.length > 0 && result.columns && result.columns.length > 0) {
+                            // 构建简易表格
+                            message += result.columns.join(' | ') + '\n';
+                            message += result.columns.map(() => '---').join(' | ') + '\n';
+                            result.data.forEach(row => {
+                                message += result.columns.map(col => row[col] ?? '').join(' | ') + '\n';
+                            });
+                            if (result.pagination && result.pagination.total > result.pagination.page_size) {
+                                message += `\n共 ${result.pagination.total} 条，第 ${result.pagination.page}/${result.pagination.total_pages} 页`;
+                            }
+                        }
+                        if (!message.trim()) message = '未查询到相关数据';
+                    } else {
+                        // 知识库/天气/错误等文本类型
+                        message = result.text || result.result || '查询完成';
+                    }
+
+                    if (result.csv) {
                         message += '\n（CSV文件已下载）';
                     }
                     addMessage(message);
                 } else {
-                    addMessage('抱歉，查询失败了：' + result.error);
+                    addMessage('抱歉，查询失败了：' + (result.error || '未知错误'));
                 }
             } catch (err) {
                 removeLoading();
