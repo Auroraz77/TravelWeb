@@ -8,15 +8,19 @@ import sqlite3
 import asyncio
 import random
 import re
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 
 import pandas as pd
 import dashscope
 from dashscope import Generation
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
+import bcrypt
+from jose import jwt, JWTError
 
 # 配置 DashScope HTTP 请求地址
 dashscope.base_url = "https://dashscope.aliyuncs.com/api/v1"
@@ -31,6 +35,22 @@ df_lock = asyncio.Lock()
 
 # 通义千问 API 配置
 dashscope.api_key = "sk-8edfb88c67a54c6b81aa180693f605e6"
+
+# JWT 配置
+SECRET_KEY = "cb2e6aae58f8aeeeed1c6836371ec81927edd1b780516ea5c4c9f6da02eec10b"
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_SECONDS = 86400  # 24小时
+
+def hash_password(password: str) -> str:
+    """对密码进行 bcrypt 哈希"""
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+def verify_password(password: str, hashed: str) -> bool:
+    """验证密码与哈希是否匹配"""
+    return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
+
+# 认证方案
+security = HTTPBearer()
 
 # 导入知识库 RAG 模块
 from knowledge_base import retrieve_knowledge
@@ -49,6 +69,56 @@ async def lifespan(app: FastAPI):
         print(f"数据加载成功，共 {len(df)} 条记录")
     except Exception as e:
         print(f"加载数据失败: {e}")
+
+    # 创建用户表
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    conn.close()
+    print("用户表初始化完成")
+
+    # 创建行程计划表
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS trip_plans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            trip_date TEXT NOT NULL,
+            time TEXT DEFAULT '',
+            note TEXT DEFAULT '',
+            status TEXT DEFAULT 'pending',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
+    # 创建账单表
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS bills (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            category TEXT NOT NULL,
+            amount REAL NOT NULL,
+            bill_date TEXT NOT NULL,
+            icon TEXT DEFAULT 'wallet',
+            color TEXT DEFAULT '#1976d2',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
+    conn.commit()
+    conn.close()
+    print("行程计划表和账单表初始化完成")
 
     # 启动后台更新任务
     asyncio.create_task(background_update())
@@ -169,6 +239,338 @@ async def get_price_distribution():
 @app.get("/api/health")
 async def health_check():
     return {"status": "ok"}
+
+
+@app.get("/api/attractions")
+async def get_attractions(keyword: str = "", city: str = "", star: str = "", page: int = 1, page_size: int = 10):
+    """景点门票列表（支持搜索、筛选、分页）"""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+
+        # 构建查询条件
+        conditions = []
+        params = []
+
+        if keyword:
+            conditions.append("(名称 LIKE ? OR 城市 LIKE ? OR 简介 LIKE ?)")
+            params.extend([f"%{keyword}%", f"%{keyword}%", f"%{keyword}%"])
+        if city:
+            conditions.append("城市 LIKE ?")
+            params.append(f"%{city}%")
+        if star:
+            conditions.append("星级 = ?")
+            params.append(star)
+
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+
+        # 查询总数
+        cursor.execute(f"SELECT COUNT(*) FROM attractions WHERE {where_clause}", params)
+        total = cursor.fetchone()[0]
+
+        # 分页查询
+        page = max(1, page)
+        page_size = min(max(1, page_size), 100)
+        offset = (page - 1) * page_size
+
+        cursor.execute(
+            f"SELECT 名称, 城市, [省/市/区], 星级, 评分, 价格, 销量, 简介, 具体地址 FROM attractions WHERE {where_clause} ORDER BY 销量 DESC LIMIT ? OFFSET ?",
+            params + [page_size, offset]
+        )
+        rows = cursor.fetchall()
+        conn.close()
+
+        data = []
+        for row in rows:
+            data.append({
+                "name": row[0],
+                "city": row[1],
+                "province": row[2] if len(row) > 2 else "",
+                "star": row[3] if len(row) > 3 else "",
+                "rating": row[4] if len(row) > 4 else 0,
+                "price": row[5] if len(row) > 5 else 0,
+                "sales": row[6] if len(row) > 6 else 0,
+                "description": row[7] if len(row) > 7 else "",
+                "address": row[8] if len(row) > 8 else "",
+            })
+
+        return {
+            "success": True,
+            "data": data,
+            "pagination": {
+                "page": page,
+                "page_size": page_size,
+                "total": total,
+                "total_pages": (total + page_size - 1) // page_size,
+            }
+        }
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+@app.get("/api/cities")
+async def get_cities():
+    """获取所有城市列表"""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT 城市 FROM attractions ORDER BY 城市")
+        cities = [row[0] for row in cursor.fetchall()]
+        conn.close()
+        return {"success": True, "data": cities}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+# ============ 用户认证接口 ============
+
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+def create_access_token(data: dict) -> str:
+    """创建 JWT token"""
+    to_encode = data.copy()
+    to_encode["exp"] = time.time() + ACCESS_TOKEN_EXPIRE_SECONDS
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> dict:
+    """从 JWT token 中解析当前用户"""
+    try:
+        token = credentials.credentials
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("sub")
+        username = payload.get("username")
+        if user_id is None:
+            raise HTTPException(status_code=401, detail="无效的认证凭据")
+        if payload.get("exp", 0) < time.time():
+            raise HTTPException(status_code=401, detail="认证已过期")
+        return {"id": int(user_id), "username": username}
+    except JWTError as e:
+        print(f"[AUTH] JWT 验证失败: {e}")
+        raise HTTPException(status_code=401, detail="无效的认证凭据")
+
+@app.post("/api/register")
+async def register(req: RegisterRequest):
+    """用户注册"""
+    username = req.username.strip()
+    password = req.password
+
+    # 参数校验
+    if not (3 <= len(username) <= 20):
+        return {"success": False, "message": "用户名长度应为 3-20 个字符"}
+    if len(password) < 6:
+        return {"success": False, "message": "密码长度不能少于 6 个字符"}
+
+    password_hash = hash_password(password)
+
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+            (username, password_hash)
+        )
+        conn.commit()
+        conn.close()
+        return {"success": True, "message": "注册成功"}
+    except sqlite3.IntegrityError:
+        return {"success": False, "message": "用户名已存在"}
+    except Exception as e:
+        return {"success": False, "message": f"注册失败: {str(e)}"}
+
+@app.post("/api/login")
+async def login(req: LoginRequest):
+    """用户登录"""
+    username = req.username.strip()
+    password = req.password
+
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, username, password_hash FROM users WHERE username = ?", (username,))
+    user = cursor.fetchone()
+    conn.close()
+
+    if not user:
+        return {"success": False, "message": "用户名或密码错误"}
+
+    user_id, db_username, password_hash = user
+    if not verify_password(password, password_hash):
+        return {"success": False, "message": "用户名或密码错误"}
+
+    token = create_access_token({"sub": str(user_id), "username": db_username})
+    return {
+        "success": True,
+        "message": "登录成功",
+        "token": token,
+        "user": {"id": user_id, "username": db_username}
+    }
+
+@app.get("/api/user/info")
+async def get_user_info(current_user: dict = Depends(get_current_user)):
+    """获取当前登录用户信息"""
+    return {
+        "success": True,
+        "user": {
+            "id": current_user["id"],
+            "username": current_user["username"]
+        }
+    }
+
+
+# ============ 行程计划接口 ============
+
+class TripPlanCreate(BaseModel):
+    name: str
+    trip_date: str
+    time: str = ''
+    note: str = ''
+    status: str = 'pending'
+
+class TripPlanUpdate(BaseModel):
+    name: str = None
+    trip_date: str = None
+    time: str = None
+    note: str = None
+    status: str = None
+
+@app.get("/api/trip-plans")
+async def get_trip_plans(current_user: dict = Depends(get_current_user)):
+    """获取当前用户所有行程计划"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, name, trip_date, time, note, status FROM trip_plans WHERE user_id = ? ORDER BY trip_date, time",
+        (current_user["id"],)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    data = [{"id": r[0], "name": r[1], "trip_date": r[2], "time": r[3], "note": r[4], "status": r[5]} for r in rows]
+    return {"success": True, "data": data}
+
+@app.post("/api/trip-plans")
+async def create_trip_plan(req: TripPlanCreate, current_user: dict = Depends(get_current_user)):
+    """新增行程计划"""
+    if not req.name.strip():
+        return {"success": False, "message": "行程名称不能为空"}
+    if not req.trip_date.strip():
+        return {"success": False, "message": "日期不能为空"}
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO trip_plans (user_id, name, trip_date, time, note, status) VALUES (?, ?, ?, ?, ?, ?)",
+        (current_user["id"], req.name.strip(), req.trip_date.strip(), req.time, req.note, req.status)
+    )
+    conn.commit()
+    new_id = cursor.lastrowid
+    conn.close()
+    return {"success": True, "message": "添加成功", "data": {"id": new_id}}
+
+@app.put("/api/trip-plans/{plan_id}")
+async def update_trip_plan(plan_id: int, req: TripPlanUpdate, current_user: dict = Depends(get_current_user)):
+    """更新行程计划"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM trip_plans WHERE id = ? AND user_id = ?", (plan_id, current_user["id"]))
+    if not cursor.fetchone():
+        conn.close()
+        return {"success": False, "message": "行程不存在"}
+    fields = []
+    params = []
+    if req.name is not None:
+        fields.append("name = ?")
+        params.append(req.name.strip())
+    if req.trip_date is not None:
+        fields.append("trip_date = ?")
+        params.append(req.trip_date.strip())
+    if req.time is not None:
+        fields.append("time = ?")
+        params.append(req.time)
+    if req.note is not None:
+        fields.append("note = ?")
+        params.append(req.note)
+    if req.status is not None:
+        fields.append("status = ?")
+        params.append(req.status)
+    if fields:
+        params.append(plan_id)
+        cursor.execute(f"UPDATE trip_plans SET {', '.join(fields)} WHERE id = ?", params)
+        conn.commit()
+    conn.close()
+    return {"success": True, "message": "更新成功"}
+
+@app.delete("/api/trip-plans/{plan_id}")
+async def delete_trip_plan(plan_id: int, current_user: dict = Depends(get_current_user)):
+    """删除行程计划"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM trip_plans WHERE id = ? AND user_id = ?", (plan_id, current_user["id"]))
+    conn.commit()
+    conn.close()
+    return {"success": True, "message": "删除成功"}
+
+
+# ============ 账单接口 ============
+
+class BillCreate(BaseModel):
+    name: str
+    category: str
+    amount: float
+    bill_date: str
+    icon: str = 'wallet'
+    color: str = '#1976d2'
+
+class BillUpdate(BaseModel):
+    name: str = None
+    category: str = None
+    amount: float = None
+    bill_date: str = None
+
+@app.get("/api/bills")
+async def get_bills(current_user: dict = Depends(get_current_user)):
+    """获取当前用户所有账单"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, name, category, amount, bill_date, icon, color FROM bills WHERE user_id = ? ORDER BY bill_date DESC, id DESC",
+        (current_user["id"],)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    data = [{"id": r[0], "name": r[1], "category": r[2], "amount": r[3], "bill_date": r[4], "icon": r[5], "color": r[6]} for r in rows]
+    return {"success": True, "data": data}
+
+@app.post("/api/bills")
+async def create_bill(req: BillCreate, current_user: dict = Depends(get_current_user)):
+    """新增账单"""
+    if not req.name.strip():
+        return {"success": False, "message": "账单名称不能为空"}
+    if req.amount <= 0:
+        return {"success": False, "message": "金额必须大于0"}
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO bills (user_id, name, category, amount, bill_date, icon, color) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (current_user["id"], req.name.strip(), req.category, req.amount, req.bill_date, req.icon, req.color)
+    )
+    conn.commit()
+    new_id = cursor.lastrowid
+    conn.close()
+    return {"success": True, "message": "添加成功", "data": {"id": new_id}}
+
+@app.delete("/api/bills/{bill_id}")
+async def delete_bill(bill_id: int, current_user: dict = Depends(get_current_user)):
+    """删除账单"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM bills WHERE id = ? AND user_id = ?", (bill_id, current_user["id"]))
+    conn.commit()
+    conn.close()
+    return {"success": True, "message": "删除成功"}
 
 
 # ============ LLM 查询接口 ============
