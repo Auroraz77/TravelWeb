@@ -9,8 +9,9 @@ import asyncio
 import random
 import re
 import time
+import json
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 import dashscope
@@ -51,6 +52,7 @@ def verify_password(password: str, hashed: str) -> bool:
 
 # 认证方案
 security = HTTPBearer()
+optional_security = HTTPBearer(auto_error=False)
 
 # 导入知识库 RAG 模块
 from knowledge_base import retrieve_knowledge
@@ -353,6 +355,22 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     except JWTError as e:
         print(f"[AUTH] JWT 验证失败: {e}")
         raise HTTPException(status_code=401, detail="无效的认证凭据")
+
+async def get_optional_current_user(credentials: HTTPAuthorizationCredentials = Depends(optional_security)) -> dict | None:
+    """尽量从 JWT token 中解析当前用户，未登录或 token 无效时返回 None。"""
+    if credentials is None:
+        return None
+    try:
+        token = credentials.credentials
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("sub")
+        username = payload.get("username")
+        if user_id is None or payload.get("exp", 0) < time.time():
+            return None
+        return {"id": int(user_id), "username": username}
+    except JWTError as e:
+        print(f"[AUTH] 可选 JWT 验证失败: {e}")
+        return None
 
 @app.post("/api/register")
 async def register(req: RegisterRequest):
@@ -683,6 +701,260 @@ def execute_query(sql):
         return str(e)
 
 
+RECORD_KEYWORDS = [
+    '添加行程', '新增行程', '记录行程', '行程记录', '帮我安排', '安排去', '计划去',
+    '记账', '记一笔', '账单', '消费', '花了', '支付', '付款', '支出',
+]
+
+BILL_CATEGORIES = {
+    '交通': {'icon': 'navigate', 'color': '#42a5f5'},
+    '门票': {'icon': 'image', 'color': '#1976d2'},
+    '餐饮': {'icon': 'coffee', 'color': '#ff9800'},
+    '住宿': {'icon': 'home', 'color': '#7b1fa2'},
+    '购物': {'icon': 'gift', 'color': '#e91e63'},
+}
+
+
+def is_record_request(question: str) -> bool:
+    """判断用户是否在请求助手记录行程或账单。"""
+    if any(keyword in question for keyword in RECORD_KEYWORDS):
+        return True
+    return bool(re.search(r'(今天|明天|后天|昨天|\d{1,2}月\d{1,2}日|\d{4}-\d{1,2}-\d{1,2}).{0,20}(去|游览|参观)', question))
+
+
+def normalize_record_date(value: str | None) -> str:
+    """将相对日期转成可展示的日期字符串，无法判断时保留原文。"""
+    if not value:
+        return datetime.now().strftime("%Y-%m-%d")
+    text = str(value).strip()
+    today = datetime.now()
+    if text in ('今天', '今日'):
+        return today.strftime("%Y-%m-%d")
+    if text == '明天':
+        return (today + timedelta(days=1)).strftime("%Y-%m-%d")
+    if text == '后天':
+        return (today + timedelta(days=2)).strftime("%Y-%m-%d")
+    if text == '昨天':
+        return (today - timedelta(days=1)).strftime("%Y-%m-%d")
+    return text
+
+
+def infer_bill_category(text: str) -> str:
+    """根据名称和上下文推断账单分类。"""
+    category_keywords = {
+        '交通': ['打车', '公交', '地铁', '高铁', '火车', '机票', '出租车', '车费', '交通'],
+        '门票': ['门票', '票', '景区', '入园', '展览', '博物馆'],
+        '餐饮': ['饭', '餐', '饮料', '奶茶', '咖啡', '小吃', '早餐', '午餐', '午饭', '晚餐', '晚饭', '早饭'],
+        '住宿': ['酒店', '民宿', '住宿', '房费', '宾馆'],
+        '购物': ['购物', '纪念品', '特产', '商店'],
+    }
+    for category, keywords in category_keywords.items():
+        if any(keyword in text for keyword in keywords):
+            return category
+    return '购物'
+
+
+def extract_json_object(text: str) -> dict | None:
+    """从 LLM 回复中提取 JSON 对象。"""
+    if not text:
+        return None
+    cleaned = text.strip()
+    fence_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', cleaned, re.DOTALL | re.IGNORECASE)
+    if fence_match:
+        cleaned = fence_match.group(1)
+    else:
+        object_match = re.search(r'\{.*\}', cleaned, re.DOTALL)
+        if object_match:
+            cleaned = object_match.group(0)
+    try:
+        return json.loads(cleaned)
+    except Exception as e:
+        print(f"[RECORD] JSON 解析失败: {e}, raw={text}")
+        return None
+
+
+def fallback_parse_records(question: str) -> dict:
+    """LLM 不可用时的简单兜底解析。"""
+    parsed = {"trips": [], "bills": []}
+    date_match = re.search(r'((?:\d{4}[-年])?\d{1,2}[月/-]\d{1,2}日?|今天|明天|后天|昨天)', question)
+    date_text = normalize_record_date(date_match.group(1)) if date_match else datetime.now().strftime("%Y-%m-%d")
+
+    amount_match = re.search(r'(.{0,30}?)(?:花了|消费|支付|付款|支出|用了)\s*[¥￥]?\s*(\d+(?:\.\d+)?)\s*(?:元|块|人民币)?', question)
+    if not amount_match:
+        amount_match = re.search(r'(.{0,30}?)[¥￥]\s*(\d+(?:\.\d+)?)', question)
+    if amount_match and any(k in question for k in ['记账', '账单', '消费', '花了', '支付', '付款', '支出']):
+        raw_name = re.sub(r'(帮我|请|记账|记一笔|账单|消费|花了|支付|付款|支出|今天|明天|后天|昨天)', '', amount_match.group(1)).strip(' ，,。')
+        name = raw_name or infer_bill_category(question)
+        parsed["bills"].append({
+            "name": name,
+            "category": infer_bill_category(question),
+            "amount": float(amount_match.group(2)),
+            "bill_date": date_text,
+        })
+
+    if any(k in question for k in ['添加行程', '新增行程', '记录行程', '行程记录', '帮我安排', '安排去', '计划去']) or re.search(r'(今天|明天|后天|昨天|\d{1,2}月\d{1,2}日|\d{4}-\d{1,2}-\d{1,2}).{0,20}(去|游览|参观)', question):
+        time_match = re.search(r'((?:上午|下午|晚上|中午|早上)?\s*\d{1,2}[:：点]\d{0,2})', question)
+        name = re.sub(r'(帮我|请|添加行程|新增行程|记录行程|行程记录|安排|今天|明天|后天|昨天)', '', question)
+        name = re.sub(r'((?:\d{4}[-年])?\d{1,2}[月/-]\d{1,2}日?)', '', name)
+        if time_match:
+            name = name.replace(time_match.group(1), '')
+        name = name.strip(' ，,。') or '未命名行程'
+        parsed["trips"].append({
+            "name": name,
+            "trip_date": date_text,
+            "time": time_match.group(1).strip() if time_match else '',
+            "note": '',
+            "status": 'pending',
+        })
+    return parsed
+
+
+def parse_records_with_llm(question: str) -> dict:
+    """用 LLM 从用户话语中提取行程和账单记录。"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    prompt = f"""你是旅游助手的信息抽取器。请从用户输入中提取需要新增的行程记录和账单记录，只返回 JSON，不要解释。
+
+今天日期：{today}
+允许的账单分类：交通、门票、餐饮、住宿、购物
+
+返回格式：
+{{
+  "intent": "record" 或 "none",
+  "trips": [
+    {{"name": "行程名称", "trip_date": "日期", "time": "时间或空字符串", "note": "备注或空字符串", "status": "pending"}}
+  ],
+  "bills": [
+    {{"name": "账单名称", "category": "交通/门票/餐饮/住宿/购物", "amount": 数字, "bill_date": "日期"}}
+  ]
+}}
+
+规则：
+1. 用户只是在询问景点、天气、系统功能时，intent 返回 "none"。
+2. “今天/明天/后天/昨天”请换算为 YYYY-MM-DD；用户明确写了中文日期也可以保留。
+3. 一句话里有多条记录时全部提取。
+4. 缺少金额的账单不要提取；缺少日期的记录使用今天日期。
+
+用户输入：{question}"""
+    response = Generation.call(
+        model="qwen-turbo",
+        prompt=prompt,
+        temperature=0
+    )
+    if response.status_code != 200:
+        print(f"[RECORD] LLM 调用失败: {response.message}")
+        return fallback_parse_records(question)
+    parsed = extract_json_object(response.output.get('text', ''))
+    if not parsed:
+        return fallback_parse_records(question)
+    return parsed
+
+
+def save_assistant_records(parsed: dict, user_id: int) -> dict:
+    """保存助手提取出的行程和账单。"""
+    trips = parsed.get("trips") or []
+    bills = parsed.get("bills") or []
+    created_trips = []
+    created_bills = []
+
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    try:
+        for item in trips:
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            trip_date = normalize_record_date(item.get("trip_date"))
+            trip_time = str(item.get("time") or "").strip()
+            note = str(item.get("note") or "").strip()
+            status_value = item.get("status") if item.get("status") in ("pending", "completed") else "pending"
+            cursor.execute(
+                "INSERT INTO trip_plans (user_id, name, trip_date, time, note, status) VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id, name, trip_date, trip_time, note, status_value)
+            )
+            created_trips.append({
+                "id": cursor.lastrowid,
+                "name": name,
+                "trip_date": trip_date,
+                "time": trip_time,
+                "note": note,
+                "status": status_value,
+            })
+
+        for item in bills:
+            name = str(item.get("name") or "").strip()
+            try:
+                amount = float(item.get("amount"))
+            except (TypeError, ValueError):
+                continue
+            if not name or amount <= 0:
+                continue
+            category = str(item.get("category") or "").strip()
+            if category not in BILL_CATEGORIES:
+                category = infer_bill_category(name)
+            bill_date = normalize_record_date(item.get("bill_date"))
+            icon = BILL_CATEGORIES[category]["icon"]
+            color = BILL_CATEGORIES[category]["color"]
+            cursor.execute(
+                "INSERT INTO bills (user_id, name, category, amount, bill_date, icon, color) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (user_id, name, category, amount, bill_date, icon, color)
+            )
+            created_bills.append({
+                "id": cursor.lastrowid,
+                "name": name,
+                "category": category,
+                "amount": amount,
+                "bill_date": bill_date,
+                "icon": icon,
+                "color": color,
+            })
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {"trips": created_trips, "bills": created_bills}
+
+
+async def handle_assistant_record(question: str, current_user: dict | None) -> dict | None:
+    """处理助手中的行程/账单记录请求，不是记录请求则返回 None。"""
+    if not is_record_request(question):
+        return None
+
+    parsed = parse_records_with_llm(question)
+    fallback_parsed = fallback_parse_records(question)
+    if fallback_parsed.get("trips") and not parsed.get("trips"):
+        parsed["trips"] = fallback_parsed["trips"]
+    if fallback_parsed.get("bills") and not parsed.get("bills"):
+        parsed["bills"] = fallback_parsed["bills"]
+    if not parsed.get("trips") and not parsed.get("bills") and parsed.get("intent") != "record":
+        return None
+
+    if current_user is None:
+        return {"type": "error", "text": "请先登录后，再让我帮你添加行程或账单。"}
+
+    saved = save_assistant_records(parsed, current_user["id"])
+    trip_count = len(saved["trips"])
+    bill_count = len(saved["bills"])
+    if trip_count == 0 and bill_count == 0:
+        return {
+            "type": "record",
+            "text": "我还没能提取出可保存的行程或账单。可以这样说：明天 9 点去外滩，今天午餐花了 68 元。",
+            "records": saved,
+        }
+
+    parts = []
+    if trip_count:
+        trip_names = "、".join(item["name"] for item in saved["trips"])
+        parts.append(f"已添加 {trip_count} 条行程：{trip_names}")
+    if bill_count:
+        bill_names = "、".join(f"{item['name']} ¥{item['amount']}" for item in saved["bills"])
+        parts.append(f"已记录 {bill_count} 笔账单：{bill_names}")
+    return {
+        "type": "record",
+        "text": "；".join(parts) + "。去个人信息页就能看到最新记录。",
+        "records": saved,
+    }
+
+
 async def query_with_llm(question: str) -> dict:
     """使用 LLM + RAG + 天气 进行自然语言查询"""
 
@@ -848,14 +1120,16 @@ def format_csv(result):
 
 
 @app.post("/api/query")
-async def query(request: QueryRequest):
+async def query(request: QueryRequest, current_user: dict | None = Depends(get_optional_current_user)):
     """自然语言查询接口 —— 移动端友好：返回结构化 JSON + 分页"""
     try:
         # 限制 page_size 范围
         page = max(1, request.page)
         page_size = min(max(1, request.page_size), 100)
 
-        result = await query_with_llm(request.question)
+        result = await handle_assistant_record(request.question, current_user)
+        if result is None:
+            result = await query_with_llm(request.question)
 
         # ---- 导出 CSV 模式 ----
         if request.export and isinstance(result, dict) and result.get("type") in ("list", "summary"):
@@ -889,6 +1163,15 @@ async def query(request: QueryRequest):
                     "total": total,
                     "total_pages": (total + page_size - 1) // page_size,
                 },
+                "timestamp": datetime.now().isoformat(),
+            }
+
+        if isinstance(result, dict) and result.get("type") == "record":
+            return {
+                "success": True,
+                "type": "record",
+                "text": result.get("text", ""),
+                "records": result.get("records", {"trips": [], "bills": []}),
                 "timestamp": datetime.now().isoformat(),
             }
 

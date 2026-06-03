@@ -9,7 +9,7 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # 气象局 API JWT Token
-JWT_TOKEN = "eyJhbGciOiJFZERTQSIsImtpZCI6IlQ0Qjk5QkVNRFIiLCJ0eXAiOiJKV1QifQ.eyJpYXQiOjE3Nzk5MjY5OTYsImV4cCI6MTc3OTkzNzgyNiwic3ViIjoiNEcyRDRXRjk1NSJ9.3SBUpvjlnoGztIqRHUSaBiL_6zC3vgjpsmAlhgh3KJ7Lybltzd7W9w1z3kOD1PuO6bV3qQ1Iin5eioB0HogZDA"
+JWT_TOKEN = "eyJhbGciOiJFZERTQSIsImtpZCI6IlQ0Qjk5QkVNRFIiLCJ0eXAiOiJKV1QifQ.eyJpYXQiOjE3ODA0NDUxNDksImV4cCI6MTc4MDQ1NTk3OSwic3ViIjoiNEcyRDRXRjk1NSJ9.nR9VYLclGLJNy1q1MjRqxsooX6rUH8-TTNHH45d-LpJjWdP08UAM7txPa5JoQPNwKYc7InHhvf5omOGu4z8gDg"
 
 # API 基础 URL
 BASE_URL = "https://my6e4fnaqq.re.qweatherapi.com"
